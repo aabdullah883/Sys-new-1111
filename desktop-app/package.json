@@ -54,17 +54,13 @@
     "nsis": {
       "artifactName": "AlSalman-HR-Setup-${version}-x64.${ext}",
       "oneClick": false,
+      "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "نظام الموارد البشرية - شركة السلمان",
       "installerIcon": "build/icon.ico",
-      "uninstallerIcon": "build/icon.ico",
-      "installerLanguages": [
-        "Arabic",
-        "English"
-      ],
-      "language": "1025"
+      "uninstallerIcon": "build/icon.ico"
     },
     "portable": {
       "artifactName": "AlSalman-HR-Portable-${version}-x64.${ext}"
