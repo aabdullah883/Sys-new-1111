@@ -1,0 +1,73 @@
+{
+  "name": "alsalman-hr-desktop",
+  "version": "1.0.0",
+  "description": "نظام الموارد البشرية لشركة السلمان - نسخة Windows مستقلة",
+  "main": "src/main.js",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "npm run prepare-assets && electron .",
+    "check": "node --check src/main.js && node --check src/local-server.js && node --check src/preload.js && node scripts/check-ui.js",
+    "test": "node --test test/local-server.test.js",
+    "build": "npm run dist",
+    "dist": "npm run prepare-assets && electron-builder --win nsis portable --x64",
+    "dist:win": "npm run dist",
+    "pack:win": "npm run prepare-assets && electron-builder --win dir --x64",
+    "prepare-assets": "node scripts/prepare-assets.js"
+  },
+  "devDependencies": {
+    "electron": "38.1.2",
+    "electron-builder": "26.0.12"
+  },
+  "build": {
+    "appId": "com.alsalman.hr.desktop",
+    "productName": "نظام الموارد البشرية - شركة السلمان",
+    "executableName": "AlSalman-HR",
+    "asar": true,
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "artifactName": "AlSalman-HR-Setup-${version}-x64.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "نظام الموارد البشرية - شركة السلمان",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerLanguages": [
+        "Arabic",
+        "English"
+      ],
+      "language": "1025"
+    },
+    "portable": {
+      "artifactName": "AlSalman-HR-Portable-${version}-x64.${ext}"
+    }
+  }
+}
