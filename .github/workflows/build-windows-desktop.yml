@@ -1,0 +1,54 @@
+name: Build Windows Desktop
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "desktop-app/**"
+      - ".github/workflows/build-windows-desktop.yml"
+  pull_request:
+    paths:
+      - "desktop-app/**"
+      - ".github/workflows/build-windows-desktop.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-x64:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop-app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Static checks
+        run: npm run check
+      - name: Integration tests
+        run: npm test
+      - name: Build Setup and Portable executables
+        run: npm run dist
+      - name: Verify artifacts
+        shell: pwsh
+        run: |
+          $setup = Get-Item "dist/AlSalman-HR-Setup-*-x64.exe"
+          $portable = Get-Item "dist/AlSalman-HR-Portable-*-x64.exe"
+          if ($setup.Length -lt 1MB -or $portable.Length -lt 1MB) { throw "Generated executable is unexpectedly small" }
+          Write-Host "Setup: $($setup.FullName) ($($setup.Length) bytes)"
+          Write-Host "Portable: $($portable.FullName) ($($portable.Length) bytes)"
+      - name: Upload Windows x64 executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: AlSalman-HR-Windows-x64
+          path: |
+            desktop-app/dist/AlSalman-HR-Setup-*-x64.exe
+            desktop-app/dist/AlSalman-HR-Portable-*-x64.exe
+          if-no-files-found: error
+          retention-days: 30
