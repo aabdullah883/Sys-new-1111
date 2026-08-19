@@ -5,6 +5,7 @@ const fs=require('fs');
 const os=require('os');
 const path=require('path');
 const {createLocalServer}=require('../src/local-server');
+const {createInternalServer}=require('../../internal-server/server');
 const publicDir=path.join(__dirname,'..','src','public');
 
 async function request(origin,route,options={}){
@@ -93,36 +94,40 @@ test('attachments, complete backup and restore survive data changes',async()=>{
   }finally{await new Promise(resolve=>server.close(resolve));fs.rmSync(dataDir,{recursive:true,force:true});}
 });
 
-test('online mode uses HTTPS API, caches offline writes, deduplicates queue and records conflicts',async()=>{
-  const dataDir=fs.mkdtempSync(path.join(os.tmpdir(),'hr-desktop-remote-'));
-  const remote={online:true,version:5,db:completeDatabase(),writes:0};
+test('EXE bridges website data to internal server, queues outages, deduplicates and records conflicts',async()=>{
+  const dataDir=fs.mkdtempSync(path.join(os.tmpdir(),'hr-desktop-bridge-')),internalDir=fs.mkdtempSync(path.join(os.tmpdir(),'hr-internal-'));
+  let internal=await createInternalServer({dataDir:internalDir,apiKey:'bridge-secret-key-123456'});
+  const website={online:true,version:5,db:completeDatabase()};
   const fetchImpl=async(url,options={})=>{
-    if(!remote.online)throw new TypeError('network offline');
-    const endpoint=new URL(url).pathname.split('/').pop(),method=options.method||'GET';
-    if(endpoint==='ping.php')return Response.json({ok:true,initialized:true,version:remote.version});
+    const parsed=new URL(url);
+    if(parsed.hostname!=='hr-alsalman.com')return fetch(url,options);
+    if(!website.online)throw new TypeError('website offline');
+    const endpoint=parsed.pathname.split('/').pop(),method=options.method||'GET';
+    if(endpoint==='ping.php')return Response.json({ok:true,initialized:true,version:website.version});
     if(endpoint==='login.php')return Response.json({token:'remote-token',id:'1005807605',role:'hr'});
-    if(endpoint==='db.php'&&method==='GET')return Response.json({version:remote.version,db:remote.db,updatedAt:'2026-08-19T00:00:00Z'});
-    if(endpoint==='db.php'&&method==='PUT'){
-      const input=JSON.parse(options.body);
-      if(input.version!==remote.version)return Response.json({error:'version_conflict',version:remote.version,db:remote.db},{status:409});
-      remote.version++;remote.db=input.db;remote.writes++;return Response.json({ok:true,version:remote.version});
-    }
+    if(endpoint==='db.php'&&method==='GET')return Response.json({version:website.version,db:website.db,updatedAt:'2026-08-19T00:00:00Z'});
     return Response.json({ok:true,value:null});
   };
   const server=await createLocalServer({dataDir,publicDir,remoteBase:'https://hr-alsalman.com/api/',fetchImpl});
+  let internalPort=internal.port;
   try{
-    const auth=await login(server);assert.equal(auth.status,200);assert.equal(auth.data.offline,false);
-    const anonymousCache=await request(server.origin,'api/db.php');assert.equal(anonymousCache.data.db.employees[0].pass,undefined);
-    let cached=await request(server.origin,'api/db.php',{headers:{'x-auth':auth.data.token}});assert.equal(cached.data.version,5);
-    remote.online=false;cached.data.db.tasks.push({id:'OFFLINE-1',title:'مهمة دون اتصال'});
-    let saved=await request(server.origin,'api/db.php',jsonOptions('PUT',{version:5,db:cached.data.db},auth.data.token));assert.equal(saved.status,200);assert.equal(saved.data.queued,true);
-    const offlineRead=await request(server.origin,'api/db.php',{headers:{'x-auth':auth.data.token}});assert.ok(offlineRead.data.db.tasks.some(task=>task.id==='OFFLINE-1'));
-    remote.online=true;let synced=await request(server.origin,'api/sync.php',jsonOptions('POST',{},auth.data.token));assert.equal(synced.data.synced,1);assert.equal(remote.writes,1);
-    synced=await request(server.origin,'api/sync.php',jsonOptions('POST',{},auth.data.token));assert.equal(synced.data.synced,0);assert.equal(remote.writes,1);
-    remote.online=false;const local=offlineRead.data.db;local.tasks.push({id:'CONFLICT-LOCAL'});
-    await request(server.origin,'api/db.php',jsonOptions('PUT',{version:6,db:local},auth.data.token));
-    remote.online=true;remote.version=7;remote.db={...remote.db,tasks:[...remote.db.tasks,{id:'CONFLICT-REMOTE'}]};
-    synced=await request(server.origin,'api/sync.php',jsonOptions('POST',{},auth.data.token));assert.equal(synced.data.conflicts,1);
-    const conflicts=await request(server.origin,'api/conflicts.php',{headers:{'x-auth':auth.data.token}});assert.equal(conflicts.data.items.length,1);assert.ok(conflicts.data.items[0].local.db.tasks.some(task=>task.id==='CONFLICT-LOCAL'));
-  }finally{await new Promise(resolve=>server.close(resolve));fs.rmSync(dataDir,{recursive:true,force:true});}
+    const auth=await login(server),token=auth.data.token;assert.equal(auth.status,200);
+    await request(server.origin,'api/bridge/config.php',jsonOptions('PUT',{url:`http://127.0.0.1:${internalPort}/api`,apiKey:'bridge-secret-key-123456'},token));
+    let sync=await request(server.origin,'api/sync.php',jsonOptions('POST',{},token));assert.equal(sync.status,200);
+    let mirrored=await fetch(`http://127.0.0.1:${internalPort}/api/store`,{headers:{'x-api-key':'bridge-secret-key-123456'}}).then(r=>r.json());assert.equal(mirrored.sourceVersion,5);assert.equal(mirrored.db.employees.length,2);
+    website.online=false;let cached=await request(server.origin,'api/db.php',{headers:{'x-auth':token}});cached.data.db.tasks.push({id:'INTERNAL-EDIT'});
+    await request(server.origin,'api/db.php',jsonOptions('PUT',{version:5,db:cached.data.db},token));
+    mirrored=await fetch(`http://127.0.0.1:${internalPort}/api/store`,{headers:{'x-api-key':'bridge-secret-key-123456'}}).then(r=>r.json());assert.ok(mirrored.db.tasks.some(t=>t.id==='INTERNAL-EDIT'));
+    await new Promise(ok=>internal.close(ok));internal=null;cached=await request(server.origin,'api/db.php',{headers:{'x-auth':token}});cached.data.db.tasks.push({id:'QUEUED-EDIT'});
+    const queued=await request(server.origin,'api/db.php',jsonOptions('PUT',{version:6,db:cached.data.db},token));assert.equal(queued.data.queued,true);
+    internal=await createInternalServer({dataDir:internalDir,apiKey:'bridge-secret-key-123456',port:internalPort});
+    sync=await request(server.origin,'api/sync.php',jsonOptions('POST',{},token));assert.equal(sync.data.synced,1);
+    sync=await request(server.origin,'api/sync.php',jsonOptions('POST',{},token));assert.equal(sync.data.synced,0);
+    mirrored=await fetch(`http://127.0.0.1:${internalPort}/api/store`,{headers:{'x-api-key':'bridge-secret-key-123456'}}).then(r=>r.json());assert.ok(mirrored.db.tasks.some(t=>t.id==='QUEUED-EDIT'));
+    cached=await request(server.origin,'api/db.php',{headers:{'x-auth':token}});
+    const external={...mirrored,db:{...mirrored.db,tasks:[...mirrored.db.tasks,{id:'EXTERNAL-INTERNAL'}]}};
+    await fetch(`http://127.0.0.1:${internalPort}/api/sync`,{method:'POST',headers:{'content-type':'application/json','x-api-key':'bridge-secret-key-123456'},body:JSON.stringify({operation_id:'external-op',base_version:mirrored.version,db:external.db})});
+    cached.data.db.tasks.push({id:'CONFLICT-LOCAL'});await request(server.origin,'api/db.php',jsonOptions('PUT',{version:7,db:cached.data.db},token));
+    const conflicts=await request(server.origin,'api/conflicts.php',{headers:{'x-auth':token}});assert.ok(conflicts.data.items.some(c=>c.local.db?.tasks.some(t=>t.id==='CONFLICT-LOCAL')));
+  }finally{await new Promise(ok=>server.close(ok));if(internal)await new Promise(ok=>internal.close(ok));fs.rmSync(dataDir,{recursive:true,force:true});fs.rmSync(internalDir,{recursive:true,force:true});}
 });

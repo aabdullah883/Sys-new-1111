@@ -1,0 +1,9 @@
+{
+  "name": "alsalman-hr-internal-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Internal Node.js backend for the AlSalman HR Windows bridge",
+  "main": "server.js",
+  "scripts": {"start":"node server.js","check":"node --check server.js","test":"node --test test/server.test.js"},
+  "engines":{"node":">=20"}
+}

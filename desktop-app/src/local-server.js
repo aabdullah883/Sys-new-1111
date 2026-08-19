@@ -1,6 +1,7 @@
 'use strict';
 const http=require('http'),fs=require('fs'),path=require('path'),crypto=require('crypto');
 const {RemoteSync}=require('./remote-sync');
+const {InternalBridge}=require('./internal-bridge');
 const MIME={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.webmanifest':'application/manifest+json','.png':'image/png'};
 const SESSION_MS=12*60*60*1000;
 function atomicWrite(file,value){fs.mkdirSync(path.dirname(file),{recursive:true});const temp=`${file}.${process.pid}.tmp`;fs.writeFileSync(temp,value,{encoding:'utf8',mode:0o600});fs.renameSync(temp,file);}
@@ -13,6 +14,7 @@ function createLocalServer({dataDir,publicDir,port=0,remoteBase=null,fetchImpl=g
   const sessions=new Map(),loadStore=()=>readJson(storeFile,{version:0,db:null,updatedAt:null});
   const modeFile=path.join(dataDir,'desktop-mode.json');
   const remote=remoteBase?new RemoteSync({dataDir,remoteBase,fetchImpl}):null;
+  const bridge=new InternalBridge({dataDir,fetchImpl});
   const getMode=()=>remote?readJson(modeFile,{mode:'online'}).mode:'local';
   const setMode=mode=>atomicWrite(modeFile,JSON.stringify({mode}));
   function backupBundle(store){
@@ -32,7 +34,8 @@ function createLocalServer({dataDir,publicDir,port=0,remoteBase=null,fetchImpl=g
   async function api(req,res,url){const endpoint=url.pathname.replace(/\.php$/,'');let store=loadStore();
     if(endpoint==='/api/ping'&&req.method==='GET'){
       let online=false,remoteInfo=null;if(remote&&getMode()==='online')try{remoteInfo=await remote.ping();online=true;}catch{}
-      return json(res,200,{ok:true,initialized:!!store.db,version:store.version,updatedAt:store.updatedAt,desktop:true,remote:true,mode:getMode(),online,remoteInfo,pending:remote?remote.queue().length:0,conflicts:remote?remote.conflicts().length:0});
+      const internal=await bridge.status();
+      return json(res,200,{ok:true,initialized:!!store.db,version:store.version,updatedAt:store.updatedAt,desktop:true,remote:true,mode:getMode(),online,remoteInfo,pending:internal.pending,conflicts:internal.conflicts,internal});
     }
     if(endpoint==='/api/mode'&&req.method==='GET')return json(res,200,{mode:getMode(),remoteAvailable:!!remote});
     if(endpoint==='/api/login'&&req.method==='POST'){
@@ -43,7 +46,7 @@ function createLocalServer({dataDir,publicDir,port=0,remoteBase=null,fetchImpl=g
       const emp=store.db?.employees?.find(e=>String(e.id)===String(input.id)&&e.active!==false);
       if((!remoteToken)&&(!emp||String(emp.pass)!==String(input.pass)))return json(res,offline?503:401,{error:offline?'offline_login_unavailable':'invalid_credentials'});
       const token=crypto.randomBytes(32).toString('hex');sessions.set(token,{expires:Date.now()+SESSION_MS,remoteToken,offline});
-      if(remoteToken)try{await remote.flush(remoteToken);const pulled=await remote.pull(remoteToken);store={version:pulled.version,db:pulled.db,updatedAt:pulled.updatedAt};saveStore(store);}catch{}
+      if(remoteToken)try{const pulled=await remote.pull(remoteToken),mirrored=await bridge.mirrorWebsite(pulled);if(!mirrored.conflicts){store={version:pulled.version,db:pulled.db,updatedAt:pulled.updatedAt};saveStore(store);}}catch{}
       const current=store.db?.employees?.find(e=>String(e.id)===String(input.id))||emp;
       return json(res,200,{ok:true,token,offline,employee:{id:current?.id||input.id,role:current?.role||''}});
     }
@@ -53,25 +56,28 @@ function createLocalServer({dataDir,publicDir,port=0,remoteBase=null,fetchImpl=g
     // Reading is needed before login because the original UI validates the employee
     // locally first. The service only listens on loopback; all mutations stay protected.
     if(endpoint==='/api/db'&&req.method==='GET'){
-      const active=session(req);if(remote&&getMode()==='online'&&active?.remoteToken)try{await remote.flush(active.remoteToken);const pulled=await remote.pull(active.remoteToken);store={version:pulled.version,db:pulled.db,updatedAt:pulled.updatedAt};saveStore(store);}catch{}
+      const active=session(req);if(remote&&getMode()==='online'&&active?.remoteToken)try{const pulled=await remote.pull(active.remoteToken);if(bridge.queue().some(item=>item.type==='store'))bridge.recordConflict(bridge.queue().find(item=>item.type==='store'),{source:'website',version:pulled.version,updatedAt:pulled.updatedAt});else{const mirrored=await bridge.mirrorWebsite(pulled);if(!mirrored.conflicts){store={version:pulled.version,db:pulled.db,updatedAt:pulled.updatedAt};saveStore(store);}}}catch{}await bridge.flush();
       let responseStore=store;
       if(remote&&getMode()==='online'&&!active&&store.db){responseStore={...store,db:{...store.db,employees:(store.db.employees||[]).map(({pass,...employee})=>employee)}};}
-      return json(res,200,{...responseStore,offline:!!(remote&&getMode()==='online'&&!active?.remoteToken),pending:remote?remote.queue().length:0,conflicts:remote?remote.conflicts().length:0});
+      const internal=await bridge.status();return json(res,200,{...responseStore,offline:!!(remote&&getMode()==='online'&&!active?.remoteToken),pending:internal.pending,conflicts:internal.conflicts,internal});
     }
     if(store.db&&!authorized(req))return json(res,401,{error:'unauthorized'});
     if(endpoint==='/api/mode'&&req.method==='PUT'){const input=await body(req);if(!['online','local'].includes(input.mode)||(!remote&&input.mode==='online'))return json(res,400,{error:'invalid_mode'});setMode(input.mode);return json(res,200,{ok:true,mode:input.mode});}
-    if(endpoint==='/api/db'&&req.method==='PUT'){const input=await body(req);if(!input.db||typeof input.db!=='object')return json(res,400,{error:'invalid_db'});if(Number(input.version)!==Number(store.version))return json(res,409,{error:'version_conflict',version:store.version,db:store.db,updatedAt:store.updatedAt});const active=session(req);store={version:store.version+1,db:input.db,updatedAt:null};saveStore(store);let queued=false;if(remote&&getMode()==='online'&&active){remote.enqueueDatabase(input.db);queued=true;if(active.remoteToken){const sync=await remote.flush(active.remoteToken);queued=!!sync.pending;if(sync.conflicts)return json(res,409,{error:'sync_conflict',version:store.version,db:store.db,conflicts:sync.conflicts});}}return json(res,200,{ok:true,version:store.version,updatedAt:store.updatedAt,queued});}
+    if(endpoint==='/api/db'&&req.method==='PUT'){const input=await body(req);if(!input.db||typeof input.db!=='object')return json(res,400,{error:'invalid_db'});if(Number(input.version)!==Number(store.version))return json(res,409,{error:'version_conflict',version:store.version,db:store.db,updatedAt:store.updatedAt});store={version:store.version+1,db:input.db,updatedAt:null};saveStore(store);bridge.enqueueStore(input.db);const sync=await bridge.flush();return json(res,200,{ok:true,version:store.version,updatedAt:store.updatedAt,queued:!!sync.pending,internalConflicts:sync.conflicts});}
     if(endpoint==='/api/kv'){
       const key=url.searchParams.get('key');if(!key)return json(res,400,{error:'missing_key'});const file=keyFile(key),active=session(req);
       if(req.method==='GET'){
-        if(remote&&getMode()==='online'&&active?.remoteToken)try{const response=await remote.request(`kv.php?key=${encodeURIComponent(key)}`,{headers:remote.headers(active.remoteToken)});if(response.ok){const result=await response.json();atomicWrite(file,JSON.stringify({key,value:result.value}));}}catch{}
+        if(remote&&getMode()==='online'&&active?.remoteToken)try{const response=await remote.request(`kv.php?key=${encodeURIComponent(key)}`,{headers:remote.headers(active.remoteToken)});if(response.ok){const result=await response.json();atomicWrite(file,JSON.stringify({key,value:result.value}));bridge.enqueueAttachment(key,result.value);await bridge.flush();}}catch{}
         return json(res,200,{value:readJson(file,{value:null}).value});
       }
-      if(req.method==='PUT'){const input=await body(req);atomicWrite(file,JSON.stringify({key,value:input.value}));if(remote&&getMode()==='online'){remote.enqueueKv(key,input.value);if(active?.remoteToken)await remote.flush(active.remoteToken);}return json(res,200,{ok:true,queued:!!(remote&&remote.queue().length)});}
-      if(req.method==='DELETE'){try{fs.unlinkSync(file);}catch{}if(remote&&getMode()==='online'){remote.enqueueKv(key,null,'DELETE');if(active?.remoteToken)await remote.flush(active.remoteToken);}return json(res,200,{ok:true,queued:!!(remote&&remote.queue().length)});}
+      if(req.method==='PUT'){const input=await body(req);atomicWrite(file,JSON.stringify({key,value:input.value}));bridge.enqueueAttachment(key,input.value);const sync=await bridge.flush();return json(res,200,{ok:true,queued:!!sync.pending});}
+      if(req.method==='DELETE'){try{fs.unlinkSync(file);}catch{}bridge.enqueueAttachment(key,null,'DELETE');const sync=await bridge.flush();return json(res,200,{ok:true,queued:!!sync.pending});}
     }
-    if(endpoint==='/api/sync'&&req.method==='POST'){const active=session(req);if(!remote||!active?.remoteToken)return json(res,503,{error:'remote_session_unavailable'});return json(res,200,await remote.flush(active.remoteToken));}
-    if(endpoint==='/api/conflicts'&&req.method==='GET')return json(res,200,{items:remote?remote.conflicts():[]});
+    if(endpoint==='/api/sync'&&req.method==='POST')return json(res,200,await bridge.flush());
+    if(endpoint==='/api/conflicts'&&req.method==='GET')return json(res,200,{items:bridge.conflicts()});
+    if(endpoint==='/api/bridge/config'&&req.method==='GET'){const config=bridge.config();return json(res,200,{url:config.url,configured:!!config.url,hasApiKey:!!config.apiKey});}
+    if(endpoint==='/api/bridge/config'&&req.method==='PUT'){const input=await body(req);try{return json(res,200,{ok:true,...bridge.setConfig(input)});}catch(e){return json(res,400,{error:e.message});}}
+    if(endpoint==='/api/bridge/status'&&req.method==='GET')return json(res,200,await bridge.status());
     if(endpoint==='/api/mail'&&req.method==='POST'){const input=await body(req),item={...input,createdAt:new Date().toISOString(),status:'local-only'};atomicWrite(path.join(outboxDir,`${Date.now()}-${crypto.randomBytes(3).toString('hex')}.json`),JSON.stringify(item));return json(res,200,{ok:true,queued:true,offline:true});}
     if(endpoint==='/api/outbox'&&req.method==='GET')return json(res,200,{items:fs.readdirSync(outboxDir).map(f=>readJson(path.join(outboxDir,f),null)).filter(Boolean)});
     if(endpoint==='/api/backup'&&req.method==='GET'){res.writeHead(200,{'Content-Type':'application/json; charset=utf-8','Content-Disposition':'attachment; filename="hr-backup.json"'});return res.end(JSON.stringify(backupBundle(store)));}
