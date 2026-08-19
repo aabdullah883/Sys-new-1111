@@ -23,6 +23,9 @@ const actualSizes = expectedSizes.map((_, index) => {
   const length = icon.readUInt32LE(entry + 8);
   const offset = icon.readUInt32LE(entry + 12);
   const png = icon.subarray(offset, offset + length);
+  if (png.readUInt8(25) !== 6) {
+    throw new Error(`The ${width}px icon must preserve a transparent background`);
+  }
   if (width !== height || png.readUInt32BE(16) !== width || png.readUInt32BE(20) !== height) {
     throw new Error(`Invalid ${width}px image in generated ICO`);
   }

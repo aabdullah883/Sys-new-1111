@@ -12,7 +12,7 @@ async function createWindow(){
 }
 const hasLock=app.requestSingleInstanceLock();
 if(!hasLock)app.quit();
-else app.whenReady().then(createWindow).catch(error=>{dialog.showErrorBox('تعذّر تشغيل النظام',error.stack||String(error));app.quit();});
+else app.whenReady().then(()=>{app.setAppUserModelId('com.alsalman.hr.desktop');return createWindow();}).catch(error=>{dialog.showErrorBox('تعذّر تشغيل النظام',error.stack||String(error));app.quit();});
 app.on('second-instance',()=>{if(mainWindow){if(mainWindow.isMinimized())mainWindow.restore();mainWindow.focus();}});
 app.on('window-all-closed',()=>app.quit());
 app.on('before-quit',()=>{if(server)server.close();});
