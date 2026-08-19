@@ -1,0 +1,7 @@
+node_modules/
+dist/
+build/icon.ico
+src/public/apple-touch-icon.png
+src/public/icon-192.png
+src/public/icon-512.png
+src/public/icon-maskable.png
