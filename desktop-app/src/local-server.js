@@ -45,7 +45,7 @@ function createLocalServer({dataDir,publicDir,port=0,remoteBase=null,fetchImpl=g
       }
       const emp=store.db?.employees?.find(e=>String(e.id)===String(input.id)&&e.active!==false);
       if((!remoteToken)&&(!emp||String(emp.pass)!==String(input.pass)))return json(res,offline?503:401,{error:offline?'offline_login_unavailable':'invalid_credentials'});
-      const token=crypto.randomBytes(32).toString('hex');sessions.set(token,{expires:Date.now()+SESSION_MS,remoteToken,offline});
+      const token=crypto.randomBytes(32).toString('hex');sessions.set(token,{expires:Date.now()+SESSION_MS,remoteToken,offline,employeeId:String(input.id)});
       if(remoteToken)try{const pulled=await remote.pull(remoteToken),mirrored=await bridge.mirrorWebsite(pulled);if(!mirrored.conflicts){store={version:pulled.version,db:pulled.db,updatedAt:pulled.updatedAt};saveStore(store);}}catch{}
       const current=store.db?.employees?.find(e=>String(e.id)===String(input.id))||emp;
       return json(res,200,{ok:true,token,offline,employee:{id:current?.id||input.id,role:current?.role||''}});
@@ -63,15 +63,15 @@ function createLocalServer({dataDir,publicDir,port=0,remoteBase=null,fetchImpl=g
     }
     if(store.db&&!authorized(req))return json(res,401,{error:'unauthorized'});
     if(endpoint==='/api/mode'&&req.method==='PUT'){const input=await body(req);if(!['online','local'].includes(input.mode)||(!remote&&input.mode==='online'))return json(res,400,{error:'invalid_mode'});setMode(input.mode);return json(res,200,{ok:true,mode:input.mode});}
-    if(endpoint==='/api/db'&&req.method==='PUT'){const input=await body(req);if(!input.db||typeof input.db!=='object')return json(res,400,{error:'invalid_db'});if(Number(input.version)!==Number(store.version))return json(res,409,{error:'version_conflict',version:store.version,db:store.db,updatedAt:store.updatedAt});store={version:store.version+1,db:input.db,updatedAt:null};saveStore(store);bridge.enqueueStore(input.db);const sync=await bridge.flush();return json(res,200,{ok:true,version:store.version,updatedAt:store.updatedAt,queued:!!sync.pending,internalConflicts:sync.conflicts});}
+    if(endpoint==='/api/db'&&req.method==='PUT'){const input=await body(req);if(!input.db||typeof input.db!=='object')return json(res,400,{error:'invalid_db'});if(Number(input.version)!==Number(store.version))return json(res,409,{error:'version_conflict',version:store.version,db:store.db,updatedAt:store.updatedAt});const active=session(req);store={version:store.version+1,db:input.db,updatedAt:null};saveStore(store);bridge.enqueueStore(input.db,active?.employeeId);const sync=await bridge.flush();return json(res,200,{ok:true,version:store.version,updatedAt:store.updatedAt,queued:!!sync.pending,internalConflicts:sync.conflicts});}
     if(endpoint==='/api/kv'){
       const key=url.searchParams.get('key');if(!key)return json(res,400,{error:'missing_key'});const file=keyFile(key),active=session(req);
       if(req.method==='GET'){
-        if(remote&&getMode()==='online'&&active?.remoteToken)try{const response=await remote.request(`kv.php?key=${encodeURIComponent(key)}`,{headers:remote.headers(active.remoteToken)});if(response.ok){const result=await response.json();atomicWrite(file,JSON.stringify({key,value:result.value}));bridge.enqueueAttachment(key,result.value);await bridge.flush();}}catch{}
+        if(remote&&getMode()==='online'&&active?.remoteToken)try{const response=await remote.request(`kv.php?key=${encodeURIComponent(key)}`,{headers:remote.headers(active.remoteToken)});if(response.ok){const result=await response.json();atomicWrite(file,JSON.stringify({key,value:result.value}));bridge.enqueueAttachment(key,result.value,'PUT','Website','Website');await bridge.flush();}}catch{}
         return json(res,200,{value:readJson(file,{value:null}).value});
       }
-      if(req.method==='PUT'){const input=await body(req);atomicWrite(file,JSON.stringify({key,value:input.value}));bridge.enqueueAttachment(key,input.value);const sync=await bridge.flush();return json(res,200,{ok:true,queued:!!sync.pending});}
-      if(req.method==='DELETE'){try{fs.unlinkSync(file);}catch{}bridge.enqueueAttachment(key,null,'DELETE');const sync=await bridge.flush();return json(res,200,{ok:true,queued:!!sync.pending});}
+      if(req.method==='PUT'){const input=await body(req);atomicWrite(file,JSON.stringify({key,value:input.value}));bridge.enqueueAttachment(key,input.value,'PUT',active?.employeeId);const sync=await bridge.flush();return json(res,200,{ok:true,queued:!!sync.pending});}
+      if(req.method==='DELETE'){try{fs.unlinkSync(file);}catch{}bridge.enqueueAttachment(key,null,'DELETE',active?.employeeId);const sync=await bridge.flush();return json(res,200,{ok:true,queued:!!sync.pending});}
     }
     if(endpoint==='/api/sync'&&req.method==='POST')return json(res,200,await bridge.flush());
     if(endpoint==='/api/conflicts'&&req.method==='GET')return json(res,200,{items:bridge.conflicts()});
@@ -94,6 +94,6 @@ function createLocalServer({dataDir,publicDir,port=0,remoteBase=null,fetchImpl=g
     }
     return json(res,404,{error:'not_found'});
   }
-  return new Promise((resolve,reject)=>{const server=http.createServer((req,res)=>{const url=new URL(req.url,'http://127.0.0.1');Promise.resolve(url.pathname.startsWith('/api/')?api(req,res,url):serve(req,res,url)).catch(e=>json(res,e.message==='Payload too large'?413:400,{error:e.message}));});server.once('error',reject);server.listen(port,'127.0.0.1',()=>{const address=server.address();resolve({origin:`http://127.0.0.1:${address.port}/`,port:address.port,close:callback=>server.close(callback)});});});
+  return new Promise((resolve,reject)=>{const server=http.createServer((req,res)=>{const url=new URL(req.url,'http://127.0.0.1');Promise.resolve(url.pathname.startsWith('/api/')?api(req,res,url):serve(req,res,url)).catch(e=>json(res,e.message==='Payload too large'?413:400,{error:e.message}));});const heartbeat=setInterval(async()=>{let websiteOnline=false;try{if(remote&&getMode()==='online'){await remote.ping();websiteOnline=true;}}catch{}try{await bridge.heartbeat({websiteOnline,pending:bridge.queue().length,lastSyncAt:bridge.state().lastSyncAt});await bridge.flush();}catch{}},15000);heartbeat.unref();server.once('error',error=>{clearInterval(heartbeat);reject(error);});server.listen(port,'127.0.0.1',()=>{const address=server.address();resolve({origin:`http://127.0.0.1:${address.port}/`,port:address.port,close:callback=>{clearInterval(heartbeat);server.close(callback);}});});});
 }
 module.exports={createLocalServer};

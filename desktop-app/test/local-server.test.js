@@ -96,7 +96,7 @@ test('attachments, complete backup and restore survive data changes',async()=>{
 
 test('EXE bridges website data to internal server, queues outages, deduplicates and records conflicts',async()=>{
   const dataDir=fs.mkdtempSync(path.join(os.tmpdir(),'hr-desktop-bridge-')),internalDir=fs.mkdtempSync(path.join(os.tmpdir(),'hr-internal-'));
-  let internal=await createInternalServer({dataDir:internalDir,apiKey:'bridge-secret-key-123456'});
+  let internal=await createInternalServer({dataDir:internalDir,apiKey:'bridge-secret-key-123456',adminPassword:'dashboard-test-password'});
   const website={online:true,version:5,db:completeDatabase()};
   const fetchImpl=async(url,options={})=>{
     const parsed=new URL(url);
@@ -120,7 +120,7 @@ test('EXE bridges website data to internal server, queues outages, deduplicates 
     mirrored=await fetch(`http://127.0.0.1:${internalPort}/api/store`,{headers:{'x-api-key':'bridge-secret-key-123456'}}).then(r=>r.json());assert.ok(mirrored.db.tasks.some(t=>t.id==='INTERNAL-EDIT'));
     await new Promise(ok=>internal.close(ok));internal=null;cached=await request(server.origin,'api/db.php',{headers:{'x-auth':token}});cached.data.db.tasks.push({id:'QUEUED-EDIT'});
     const queued=await request(server.origin,'api/db.php',jsonOptions('PUT',{version:6,db:cached.data.db},token));assert.equal(queued.data.queued,true);
-    internal=await createInternalServer({dataDir:internalDir,apiKey:'bridge-secret-key-123456',port:internalPort});
+    internal=await createInternalServer({dataDir:internalDir,apiKey:'bridge-secret-key-123456',adminPassword:'dashboard-test-password',port:internalPort});
     sync=await request(server.origin,'api/sync.php',jsonOptions('POST',{},token));assert.equal(sync.data.synced,1);
     sync=await request(server.origin,'api/sync.php',jsonOptions('POST',{},token));assert.equal(sync.data.synced,0);
     mirrored=await fetch(`http://127.0.0.1:${internalPort}/api/store`,{headers:{'x-api-key':'bridge-secret-key-123456'}}).then(r=>r.json());assert.ok(mirrored.db.tasks.some(t=>t.id==='QUEUED-EDIT'));
