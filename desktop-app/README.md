@@ -35,7 +35,7 @@ npm run dist
 - `dist/AlSalman-HR-Setup-1.0.0-x64.exe`
 - `dist/AlSalman-HR-Portable-1.0.0-x64.exe`
 
-يشغّل أمر البناء `scripts/prepare-assets.js` أولاً لفك ترميز أيقونة البرنامج الخارجية المرفقة والمحفوظة نصياً داخل `assets/`، ثم إنشاء صور التطبيق و`build/icon.ico` مؤقتاً منها. هذه الملفات الثنائية المولدة مستثناة من Git ولا تدخل في تغييرات Pull Request. المثبت NSIS يسمح باختيار مسار التثبيت وينشئ اختصاري سطح المكتب وقائمة ابدأ. كما يبني workflow الموجود في `.github/workflows/build-windows-desktop.yml` الملفين على Windows ويرفعهما في artifact باسم `AlSalman-HR-Windows-x64`.
+يشغّل أمر البناء `scripts/prepare-assets.js` أولاً لفك ترميز أيقونة البرنامج الخارجية المرفقة والمحفوظة نصياً داخل `assets/`، ثم إنشاء صور التطبيق و`build/icon.ico` عالي الجودة بسبعة مقاسات (16–256 بكسل) مؤقتاً منها، دون تمديد الشعار أو تغيير أبعاده النسبية. هذه الملفات الثنائية المولدة مستثناة من Git ولا تدخل في تغييرات Pull Request. المثبت NSIS يسمح باختيار مسار التثبيت وينشئ اختصاري سطح المكتب وقائمة ابدأ. كما يبني workflow الموجود في `.github/workflows/build-windows-desktop.yml` الملفين على Windows ويرفعهما في artifact باسم `AlSalman-HR-Windows-x64`.
 
 ## التنظيم
 
