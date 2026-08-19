@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "npm run prepare-assets && electron .",
-    "check": "node --check src/main.js && node --check src/local-server.js && node --check src/preload.js && node scripts/check-ui.js && node scripts/check-assets.js",
+    "check": "node --check src/main.js && node --check src/local-server.js && node --check src/remote-sync.js && node --check src/preload.js && node scripts/check-ui.js && node scripts/check-assets.js",
     "test": "node --test test/local-server.test.js",
     "build": "npm run dist",
     "dist": "npm run prepare-assets && electron-builder --win nsis portable --x64",

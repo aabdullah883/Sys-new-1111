@@ -300,7 +300,7 @@ async function installApp(){
 const MEM={};
 const LS=(function(){ try{ localStorage.setItem('__hrt','1'); localStorage.removeItem('__hrt'); return true; }catch(e){ return false; } })();
 /* ===== الاتصال بالسيرفر الخاص ===== */
-let SRV=null, SRV_VER=0, TOKEN=null, SRV_INIT=false;
+let SRV=null, SRV_VER=0, TOKEN=null, SRV_INIT=false, DESKTOP_REMOTE=false, DESKTOP_MODE='local', DESKTOP_ONLINE=false, SYNC_PENDING=0, SYNC_CONFLICTS=0;
 function hdrs(){ const h={'Content-Type':'application/json'}; if(TOKEN) h['x-auth']=TOKEN; return h; }
 let SRV_LAST_ERR='';
 async function probeServer(){
@@ -316,7 +316,7 @@ async function probeServer(){
     if(!r.ok){ SRV_LAST_ERR='رمز الاستجابة: '+r.status; return null; }
     const j=await r.json();
     if(!j||!j.ok){ SRV_LAST_ERR='استجابة غير متوقعة من السيرفر'; return null; }
-    SRV_INIT=!!j.initialized; SRV_VER=j.version||0;
+    SRV_INIT=!!j.initialized; SRV_VER=j.version||0; DESKTOP_REMOTE=!!j.remote; DESKTOP_MODE=j.mode||'local'; DESKTOP_ONLINE=!!j.online; SYNC_PENDING=j.pending||0; SYNC_CONFLICTS=j.conflicts||0;
     return base;
   }catch(e){
     SRV_LAST_ERR = (e&&e.name==='AbortError')?'انتهت مهلة الاتصال (6 ثوانٍ) — السيرفر لا يستجيب':(e&&e.message)||'تعذر الاتصال';
@@ -1391,6 +1391,16 @@ function loginView(){
 }
 async function doLogin(){
   const u=normNum($('lu').value), p=$('lp').value.trim();
+  let serverAuthenticated=false;
+  if(DESKTOP_REMOTE&&SRV){
+    const remoteLogin=await serverLogin(u,p);
+    if(!remoteLogin.ok){
+      $('loginErr').innerHTML='<div class="err">'+(remoteLogin.kind==='auth'?'بيانات الدخول غير صحيحة على سيرفر الشركة.':'السيرفر غير متاح ولا توجد نسخة محلية صالحة لهذا الحساب.')+'</div>';
+      return;
+    }
+    serverAuthenticated=true;
+    const latest=await pullDB(); if(latest) DB=latest;
+  }
   const e=DB.employees.find(x=>normNum(x.id)===u||normNum(x.iqama)===u||normNum(x.mobile)===u);
   const pOk=e&&(e.pass===p||(/^[٠-٩۰-۹]+$/.test($('lp').value.trim())&&e.pass===normNum($('lp').value)));
   if(!e||!pOk){
@@ -1399,7 +1409,7 @@ async function doLogin(){
       (LOGIN_TRIES>=3?'<div style="margin-top:6px;font-size:12.5px">نسيت كلمة المرور؟ استخدم رابط الاستعادة أدناه، أو أضف <b>?reset=1</b> إلى رابط الصفحة لإعادة ضبط النسخة المحلية.</div>':'')+'</div>';
     return; }
   if(!e.active){ $('loginErr').innerHTML='<div class="err">هذا الحساب موقوف. راجع إدارة الموارد البشرية.</div>'; return; }
-  if(SRV){ const r=await serverLogin(u,p);
+  if(SRV&&!serverAuthenticated){ const r=await serverLogin(u,p);
     if(!r.ok){
       if(r.kind==='auth'){
         LOGIN_TRIES=(typeof LOGIN_TRIES==='undefined'?0:LOGIN_TRIES)+1;
@@ -4579,6 +4589,10 @@ function vReports(){
 function vSettings(){
   const s=DB.settings;
   return '<div class="grid g2" style="align-items:start">'+
+  (DESKTOP_REMOTE?'<div class="card"><div class="hd"><h3>اتصال نسخة Windows</h3></div><div class="bd">'+
+   '<div class="note '+(DESKTOP_ONLINE?'ok':'warn')+'">'+(DESKTOP_ONLINE?'🟢 متصل بقاعدة بيانات موقع الشركة':'🟠 العمل من الذاكرة المحلية — ستتم المزامنة عند عودة الاتصال')+'</div>'+
+   '<div class="grid g2" style="margin-top:12px"><div class="kpi o"><div class="lb">عمليات بانتظار المزامنة</div><div class="vl num">'+SYNC_PENDING+'</div></div><div class="kpi r"><div class="lb">تعارضات محفوظة للمراجعة</div><div class="vl num">'+SYNC_CONFLICTS+'</div></div></div>'+
+   '<div class="pill-row" style="margin-top:14px"><button class="btn '+(DESKTOP_MODE==='online'?'green':'ghost')+'" onclick="setDesktopMode(\'online\')">Online Server Mode</button><button class="btn '+(DESKTOP_MODE==='local'?'green':'ghost')+'" onclick="setDesktopMode(\'local\')">Offline Local Mode</button><button class="btn ghost" onclick="syncDesktopQueue()">مزامنة الآن</button>'+(SYNC_CONFLICTS?'<button class="btn ghost" onclick="viewSyncConflicts()">عرض التعارضات</button>':'')+'</div></div></div>':'')+
   '<div class="card"><div class="hd"><h3>إعدادات عامة</h3></div><div class="bd">'+
    '<div class="field"><label>اسم المنشأة</label><input id="s_org" value="'+esc(s.orgName)+'"></div>'+
    '<div class="row-2">'+
@@ -4640,6 +4654,20 @@ function vSettings(){
   '<div class="card" style="grid-column:1/-1;border-color:#F0CFD1"><div class="hd"><h3>إعادة ضبط البيانات</h3></div><div class="bd">'+
    '<p class="mini" style="margin-top:0">حذف جميع المعاملات والإشعارات وإعادة توليد البيانات التجريبية.</p>'+
    '<button class="btn red" onclick="resetAll()">إعادة ضبط النظام</button></div></div></div>';
+}
+
+async function setDesktopMode(mode){
+  if(!SRV||!TOKEN)return;
+  const r=await fetch(SRV+'/mode.php',{method:'PUT',headers:hdrs(),body:JSON.stringify({mode})});
+  if(!r.ok){toast('تعذر تغيير وضع الاتصال');return;} DESKTOP_MODE=mode; toast(mode==='online'?'تم تفعيل سيرفر الشركة كمصدر رئيسي':'تم تفعيل النسخة المحلية الاحتياطية'); location.reload();
+}
+async function syncDesktopQueue(){
+  if(!SRV||!TOKEN)return; const r=await fetch(SRV+'/sync.php',{method:'POST',headers:hdrs(),body:'{}'}),j=await r.json();
+  if(!r.ok){toast('تعذرت المزامنة — تحقق من الاتصال');return;} toast('تمت مزامنة '+(j.synced||0)+' عملية'+(j.conflicts?' وحُفظ '+j.conflicts+' تعارض للمراجعة':'')); location.reload();
+}
+async function viewSyncConflicts(){
+  const r=await fetch(SRV+'/conflicts.php',{headers:hdrs(),cache:'no-store'}),j=await r.json(),items=j.items||[];
+  modal('⚠️ تعارضات المزامنة المحفوظة',items.length?'<div class="note warn" style="margin-bottom:12px">لم تُحذف التعديلات المحلية التالية. راجعها قبل تطبيقها يدوياً على أحدث بيانات السيرفر.</div>'+items.slice().reverse().map(c=>'<div class="card" style="padding:12px;margin-bottom:8px"><b>عملية '+esc(c.id)+'</b><div class="mini">'+fmtT(c.detectedAt)+' • الإصدار المحلي '+esc((c.local||{}).baseVersion||'—')+' • إصدار السيرفر '+esc((c.remote||{}).version||'—')+'</div></div>').join(''):'<div class="empty">لا توجد تعارضات محفوظة.</div>','<button class="btn ghost" onclick="closeModal()">إغلاق</button>');
 }
 let LOGOTMP=null;
 async function pickLogo(inp){ const f=inp.files[0]; if(!f) return;

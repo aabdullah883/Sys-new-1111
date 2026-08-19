@@ -4,7 +4,7 @@ const path=require('path');
 const {createLocalServer}=require('./local-server');
 let server,mainWindow;
 async function createWindow(){
-  server=await createLocalServer({dataDir:path.join(app.getPath('userData'),'data'),publicDir:path.join(__dirname,'public')});
+  server=await createLocalServer({dataDir:path.join(app.getPath('userData'),'data'),publicDir:path.join(__dirname,'public'),remoteBase:'https://hr-alsalman.com/api/'});
   mainWindow=new BrowserWindow({width:1440,height:920,minWidth:1024,minHeight:700,show:false,icon:path.join(__dirname,'public','icon-512.png'),backgroundColor:'#f5f7fa',autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'preload.js'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
   mainWindow.webContents.setWindowOpenHandler(({url})=>{if(/^https?:/i.test(url))shell.openExternal(url);return{action:'deny'};});
   mainWindow.webContents.on('will-navigate',(event,url)=>{if(!url.startsWith(server.origin)){event.preventDefault();shell.openExternal(url);}});

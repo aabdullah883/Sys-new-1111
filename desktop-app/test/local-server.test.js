@@ -92,3 +92,37 @@ test('attachments, complete backup and restore survive data changes',async()=>{
     assert.ok(fs.readdirSync(path.join(dataDir,'backups')).some(name=>name.startsWith('before-restore-')));
   }finally{await new Promise(resolve=>server.close(resolve));fs.rmSync(dataDir,{recursive:true,force:true});}
 });
+
+test('online mode uses HTTPS API, caches offline writes, deduplicates queue and records conflicts',async()=>{
+  const dataDir=fs.mkdtempSync(path.join(os.tmpdir(),'hr-desktop-remote-'));
+  const remote={online:true,version:5,db:completeDatabase(),writes:0};
+  const fetchImpl=async(url,options={})=>{
+    if(!remote.online)throw new TypeError('network offline');
+    const endpoint=new URL(url).pathname.split('/').pop(),method=options.method||'GET';
+    if(endpoint==='ping.php')return Response.json({ok:true,initialized:true,version:remote.version});
+    if(endpoint==='login.php')return Response.json({token:'remote-token',id:'1005807605',role:'hr'});
+    if(endpoint==='db.php'&&method==='GET')return Response.json({version:remote.version,db:remote.db,updatedAt:'2026-08-19T00:00:00Z'});
+    if(endpoint==='db.php'&&method==='PUT'){
+      const input=JSON.parse(options.body);
+      if(input.version!==remote.version)return Response.json({error:'version_conflict',version:remote.version,db:remote.db},{status:409});
+      remote.version++;remote.db=input.db;remote.writes++;return Response.json({ok:true,version:remote.version});
+    }
+    return Response.json({ok:true,value:null});
+  };
+  const server=await createLocalServer({dataDir,publicDir,remoteBase:'https://hr-alsalman.com/api/',fetchImpl});
+  try{
+    const auth=await login(server);assert.equal(auth.status,200);assert.equal(auth.data.offline,false);
+    const anonymousCache=await request(server.origin,'api/db.php');assert.equal(anonymousCache.data.db.employees[0].pass,undefined);
+    let cached=await request(server.origin,'api/db.php',{headers:{'x-auth':auth.data.token}});assert.equal(cached.data.version,5);
+    remote.online=false;cached.data.db.tasks.push({id:'OFFLINE-1',title:'مهمة دون اتصال'});
+    let saved=await request(server.origin,'api/db.php',jsonOptions('PUT',{version:5,db:cached.data.db},auth.data.token));assert.equal(saved.status,200);assert.equal(saved.data.queued,true);
+    const offlineRead=await request(server.origin,'api/db.php',{headers:{'x-auth':auth.data.token}});assert.ok(offlineRead.data.db.tasks.some(task=>task.id==='OFFLINE-1'));
+    remote.online=true;let synced=await request(server.origin,'api/sync.php',jsonOptions('POST',{},auth.data.token));assert.equal(synced.data.synced,1);assert.equal(remote.writes,1);
+    synced=await request(server.origin,'api/sync.php',jsonOptions('POST',{},auth.data.token));assert.equal(synced.data.synced,0);assert.equal(remote.writes,1);
+    remote.online=false;const local=offlineRead.data.db;local.tasks.push({id:'CONFLICT-LOCAL'});
+    await request(server.origin,'api/db.php',jsonOptions('PUT',{version:6,db:local},auth.data.token));
+    remote.online=true;remote.version=7;remote.db={...remote.db,tasks:[...remote.db.tasks,{id:'CONFLICT-REMOTE'}]};
+    synced=await request(server.origin,'api/sync.php',jsonOptions('POST',{},auth.data.token));assert.equal(synced.data.conflicts,1);
+    const conflicts=await request(server.origin,'api/conflicts.php',{headers:{'x-auth':auth.data.token}});assert.equal(conflicts.data.items.length,1);assert.ok(conflicts.data.items[0].local.db.tasks.some(task=>task.id==='CONFLICT-LOCAL'));
+  }finally{await new Promise(resolve=>server.close(resolve));fs.rmSync(dataDir,{recursive:true,force:true});}
+});
