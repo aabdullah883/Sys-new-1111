@@ -250,6 +250,7 @@ tbody tr:hover{background:#F9FBFC}
 </head>
 <body>
 <div id="root"></div>
+<script src="employee-import.js"></script>
 <script>
 /* ================= التطبيق القابل للتثبيت ================= */
 let INSTALL_EVT=null;
@@ -4793,7 +4794,7 @@ const IMP_MAP={
  'القسم':'dept','الادارة':'dept','الإدارة':'dept','الفرع':'branch','المسمى':'title','المسمى الوظيفي':'title','الوظيفة':'title',
  'تاريخ التعيين':'joinDate','المباشرة':'joinDate','بداية العقد':'contractStart','نهاية العقد':'contractEnd','انتهاء العقد':'contractEnd',
  'الراتب':'salary','الراتب الاساسي':'salary','الراتب الأساسي':'salary','بدل السكن':'housing','بدل النقل':'transport',
- 'الصلاحية':'role','الجنس':'gender','تاريخ الميلاد':'birthDate','الحالة الاجتماعية':'marital',
+ 'الصلاحية':'role','role':'role','الجنس':'gender','تاريخ الميلاد':'birthDate','الحالة الاجتماعية':'marital',
  'رقم الجواز':'passport','انتهاء الجواز':'passportExpiry','البنك':'bank','الايبان':'iban','الآيبان':'iban',
  'شركة التامين':'insCompany','شركة التأمين':'insCompany','انتهاء التامين':'insExpiry','انتهاء التأمين':'insExpiry','فئة التامين':'insCls','فئة التأمين':'insCls',
  'رصيد الاجازات':'leaveBalance','رصيد الإجازات':'leaveBalance','المدير المباشر':'managerId'
@@ -4900,6 +4901,7 @@ function runImport(){
     const iq=String(r.iqama).trim();
     let e=DB.employees.find(x=>x.iqama===iq||(r.id&&x.id===String(r.id).trim()));
     const pass= pwMode==='iqama'? iq.slice(-6) : '123456';
+    const importedRole=EmployeeImport.csvRole(r.role);
     const base={
       name:r.name.trim(), iqama:iq,
       iqamaExpiry:normDate(r.iqamaExpiry)||null,
@@ -4916,19 +4918,18 @@ function runImport(){
       insurance:{company:r.insCompany||INS_CO[0],policy:'',cls:r.insCls||'C',expiry:normDate(r.insExpiry)||addD(today(),365)},
       salary:+(r.salary||0)||5000,
       pay:{basic:+(r.salary||0)||5000,housing:+(r.housing||0)||0,transport:+(r.transport||0)||0,other:0},
-      leaveBalance:+(r.leaveBalance||0)||DB.settings.defaultLeave,
-      role:(r.role&&ROLE_NAME[r.role])?r.role:(r.role==='مدير قسم'?'manager':r.role==='مدير فرع'?'branch':r.role==='موظف موارد بشرية'?'hr_staff':'employee')
+      leaveBalance:+(r.leaveBalance||0)||DB.settings.defaultLeave
     };
     if(e){
       if(!upd){ skip++; return; }
-      Object.assign(e,base); e.updatedAt=new Date().toISOString(); up++;
+      EmployeeImport.applyEmployeeImport(e,base,r.role); e.updatedAt=new Date().toISOString(); up++;
     } else {
       const id=(r.id?String(r.id).trim():String(nextId++));
       const mgr=DB.employees.find(x=>x.role==='manager'&&x.branch===base.branch&&x.dept===base.dept);
       DB.employees.push(Object.assign({id,pass,mustChangePass:true,active:true,profileComplete:false,photo:0,iqamaImg:0,
         contractType:'محدد المدة',contractImg:0,contractDecision:'',dependents:[],notes:[],achievements:[],
         leaveTaken:0,expYears:'',qualification:{degree:'',major:'',year:'',institute:''},
-        address:{city:brCity(base.branch),district:''},emergency:{name:'',relation:'',mobile:''},
+        address:{city:brCity(base.branch),district:''},emergency:{name:'',relation:'',mobile:''},role:importedRole||'employee',
         managerId:(r.managerId||(mgr?mgr.id:'1001'))},base));
       add++;
     }
