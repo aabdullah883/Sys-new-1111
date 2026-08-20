@@ -5,6 +5,7 @@ const fs=require('fs');
 const os=require('os');
 const path=require('path');
 const {createLocalServer}=require('../src/local-server');
+const {csvRole,applyEmployeeImport}=require('../src/public/employee-import');
 const publicDir=path.join(__dirname,'..','src','public');
 
 async function request(origin,route,options={}){
@@ -36,6 +37,24 @@ function completeDatabase(){
 async function login(server,id='1005807605',pass='12345'){
   return request(server.origin,'api/login.php',jsonOptions('POST',{id,pass}));
 }
+
+test('CSV update without a role preserves a manager role and its permissions',()=>{
+  const manager={id:'3001',name:'الاسم القديم',mobile:'0500000000',branch:'B1',role:'manager',permissions:{approve:true}};
+  applyEmployeeImport(manager,{name:'الاسم الجديد',mobile:'0511111111',branch:'B2'},undefined);
+  assert.deepEqual(manager,{id:'3001',name:'الاسم الجديد',mobile:'0511111111',branch:'B2',role:'manager',permissions:{approve:true}});
+  applyEmployeeImport(manager,{name:'اسم أحدث'},'');
+  assert.equal(manager.role,'manager');
+  assert.deepEqual(manager.permissions,{approve:true});
+});
+
+test('CSV role labels map to every supported application role',()=>{
+  assert.deepEqual(['موظف','مدير قسم','مدير فرع','موظف موارد بشرية','مدير الموارد البشرية','المدير العام'].map(csvRole),
+    ['employee','manager','branch','hr_staff','hr','gm']);
+  assert.equal(csvRole(undefined)||'employee','employee');
+  const employee={role:'manager'};
+  applyEmployeeImport(employee,{},'مدير الموارد البشرية');
+  assert.equal(employee.role,'hr');
+});
 
 test('serves the complete original Arabic RTL UI without PHP or MySQL',async()=>{
   const dataDir=fs.mkdtempSync(path.join(os.tmpdir(),'hr-desktop-ui-'));
