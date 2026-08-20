@@ -92,3 +92,41 @@ test('attachments, complete backup and restore survive data changes',async()=>{
     assert.ok(fs.readdirSync(path.join(dataDir,'backups')).some(name=>name.startsWith('before-restore-')));
   }finally{await new Promise(resolve=>server.close(resolve));fs.rmSync(dataDir,{recursive:true,force:true});}
 });
+
+test('hr login is Super Admin with the complete administrative UI and immutable permissions',async()=>{
+  const dataDir=fs.mkdtempSync(path.join(os.tmpdir(),'hr-desktop-super-admin-'));
+  const server=await createLocalServer({dataDir,publicDir});
+  try{
+    const db=completeDatabase();
+    await request(server.origin,'api/db.php',jsonOptions('PUT',{version:0,db}));
+    const auth=await login(server);
+    assert.equal(auth.status,200);assert.equal(auth.data.employee.role,'hr');
+    const html=fs.readFileSync(path.join(publicDir,'index.html'),'utf8');
+    for(const capability of ['hrdash','staff','addEmp','editEmp','deleteEmp','reports','settings','perms','exportData'])assert.ok(html.includes(`['${capability}'`)||html.includes(`['${capability}',`)||html.includes(`{v:'${capability}'`),`missing HR capability: ${capability}`);
+    assert.match(html,/function can\(k,u\).*u\.role==='hr'/);
+    assert.match(html,/function permsOf\(role\).*role==='hr'\?DEF_PERMS\.hr/);
+    assert.match(html,/VIEW=\(e\.role==='hr'\|\|e\.role==='hr_staff'\)\?'hrdash'/);
+
+    const imported={...db,employees:db.employees.filter(employee=>employee.role!=='hr')};
+    const saved=await request(server.origin,'api/db.php',jsonOptions('PUT',{version:1,db:imported},auth.data.token));
+    assert.equal(saved.status,200);
+    const current=await request(server.origin,'api/db.php',{headers:{'x-auth':auth.data.token}});
+    const manager=current.data.db.employees.find(employee=>employee.id==='1005807605');
+    assert.equal(manager.role,'hr');assert.equal(manager.active,true);assert.equal(manager.pass,'12345');
+  }finally{await new Promise(resolve=>server.close(resolve));fs.rmSync(dataDir,{recursive:true,force:true});}
+});
+
+test('missing HR account can be safely recreated without a source-code password',async()=>{
+  const dataDir=fs.mkdtempSync(path.join(os.tmpdir(),'hr-desktop-setup-'));
+  const server=await createLocalServer({dataDir,publicDir});
+  try{
+    const db=completeDatabase();db.employees=db.employees.filter(employee=>employee.role!=='hr');
+    await request(server.origin,'api/db.php',jsonOptions('PUT',{version:0,db}));
+    assert.equal((await request(server.origin,'api/ping.php')).data.needsHrSetup,true);
+    assert.equal((await request(server.origin,'api/setup/hr.php',jsonOptions('POST',{id:'9001',name:'مدير جديد',password:'short'}))).status,400);
+    const setup=await request(server.origin,'api/setup/hr.php',jsonOptions('POST',{id:'9001',name:'مدير جديد',password:'SecureHr9001'}));
+    assert.equal(setup.status,200);
+    const auth=await login(server,'9001','SecureHr9001');assert.equal(auth.status,200);assert.equal(auth.data.employee.role,'hr');
+    assert.equal((await request(server.origin,'api/setup/hr.php',jsonOptions('POST',{id:'9002',name:'مدير آخر',password:'SecureHr9002'}))).status,409);
+  }finally{await new Promise(resolve=>server.close(resolve));fs.rmSync(dataDir,{recursive:true,force:true});}
+});

@@ -6,6 +6,17 @@ function atomicWrite(file,value){fs.mkdirSync(path.dirname(file),{recursive:true
 function readJson(file,fallback){try{return JSON.parse(fs.readFileSync(file,'utf8'));}catch{return fallback;}}
 function json(res,status,value){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(value));}
 function body(req){return new Promise((resolve,reject)=>{let raw='';req.on('data',c=>{raw+=c;if(raw.length>80*1024*1024)reject(new Error('Payload too large'));});req.on('end',()=>{try{resolve(raw?JSON.parse(raw):{});}catch{reject(new Error('Invalid JSON'));}});req.on('error',reject);});}
+function activeHr(db){return db?.employees?.find(employee=>employee.role==='hr'&&employee.active!==false);}
+function protectSuperAdmin(previous,next,superAdminId){
+  if(!previous||!superAdminId)return next;
+  const protectedAccount=previous.employees?.find(employee=>String(employee.id)===String(superAdminId));
+  if(!protectedAccount)return next;
+  next.employees=Array.isArray(next.employees)?next.employees:[];
+  const index=next.employees.findIndex(employee=>String(employee.id)===String(superAdminId));
+  if(index<0)next.employees.push(protectedAccount);
+  else next.employees[index]={...next.employees[index],id:protectedAccount.id,pass:protectedAccount.pass,role:'hr',active:true};
+  return next;
+}
 function bearer(req){if(req.headers['x-auth'])return req.headers['x-auth'];const match=/^Bearer\s+(.+)$/i.exec(req.headers.authorization||'');return match&&match[1];}
 function createLocalServer({dataDir,publicDir,port=0}){
   fs.mkdirSync(dataDir,{recursive:true});const storeFile=path.join(dataDir,'store.json'),kvDir=path.join(dataDir,'kv'),backupDir=path.join(dataDir,'backups'),outboxDir=path.join(dataDir,'outbox');[kvDir,backupDir,outboxDir].forEach(d=>fs.mkdirSync(d,{recursive:true}));
@@ -24,7 +35,18 @@ function createLocalServer({dataDir,publicDir,port=0}){
   function authorized(req){const token=bearer(req),expiry=sessions.get(token);if(!expiry||expiry<Date.now()){if(token)sessions.delete(token);return false;}return true;}
   function serve(req,res,url){const rel=url.pathname==='/'?'index.html':decodeURIComponent(url.pathname).replace(/^\/+/,'');const root=path.resolve(publicDir),file=path.resolve(root,rel);if(!file.startsWith(root+path.sep))return json(res,403,{error:'forbidden'});try{if(!fs.statSync(file).isFile())throw new Error();res.writeHead(200,{'Content-Type':MIME[path.extname(file)]||'application/octet-stream','Cache-Control':rel==='index.html'?'no-store':'public, max-age=86400'});fs.createReadStream(file).pipe(res);}catch{json(res,404,{error:'not_found'});}}
   async function api(req,res,url){const endpoint=url.pathname.replace(/\.php$/,'');let store=loadStore();
-    if(endpoint==='/api/ping'&&req.method==='GET')return json(res,200,{ok:true,initialized:!!store.db,version:store.version,updatedAt:store.updatedAt,desktop:true});
+    if(endpoint==='/api/ping'&&req.method==='GET')return json(res,200,{ok:true,initialized:!!store.db,needsHrSetup:!!store.db&&!activeHr(store.db),version:store.version,updatedAt:store.updatedAt,desktop:true});
+    if(endpoint==='/api/setup/hr'&&req.method==='POST'){
+      if(!store.db||activeHr(store.db))return json(res,409,{error:'setup_not_available'});
+      const input=await body(req),id=String(input.id||'').trim(),name=String(input.name||'').trim(),password=String(input.password||'');
+      if(!/^\d{4,20}$/.test(id)||name.length<3||password.length<10||!/[A-Za-z]/.test(password)||!/\d/.test(password))return json(res,400,{error:'invalid_setup'});
+      const employees=Array.isArray(store.db.employees)?store.db.employees:[];
+      const index=employees.findIndex(employee=>String(employee.id)===id||String(employee.iqama||'')===id);
+      const account={...(index>=0?employees[index]:{}),id,iqama:(index>=0&&employees[index].iqama)||id,name,pass:password,role:'hr',active:true,mustChangePass:false,superAdmin:true};
+      if(index>=0)employees[index]=account;else employees.push(account);
+      store.superAdminId=id;store.version=Number(store.version)+1;saveStore(store);
+      return json(res,200,{ok:true,version:store.version});
+    }
     if(endpoint==='/api/login'&&req.method==='POST'){const input=await body(req),emp=store.db?.employees?.find(e=>String(e.id)===String(input.id)&&e.active!==false);if(!emp||String(emp.pass)!==String(input.pass))return json(res,401,{error:'invalid_credentials'});const token=crypto.randomBytes(32).toString('hex');sessions.set(token,Date.now()+SESSION_MS);return json(res,200,{ok:true,token,employee:{id:emp.id,role:emp.role}});}
     if(endpoint==='/api/logout'&&req.method==='POST'){sessions.delete(bearer(req));return json(res,200,{ok:true});}
     // Before the first seed is written the UI must be able to read the empty store.
@@ -33,7 +55,7 @@ function createLocalServer({dataDir,publicDir,port=0}){
     // locally first. The service only listens on loopback; all mutations stay protected.
     if(endpoint==='/api/db'&&req.method==='GET')return json(res,200,store);
     if(store.db&&!authorized(req))return json(res,401,{error:'unauthorized'});
-    if(endpoint==='/api/db'&&req.method==='PUT'){const input=await body(req);if(!input.db||typeof input.db!=='object')return json(res,400,{error:'invalid_db'});if(Number(input.version)!==Number(store.version))return json(res,409,{error:'version_conflict',version:store.version,db:store.db,updatedAt:store.updatedAt});store={version:store.version+1,db:input.db,updatedAt:null};saveStore(store);return json(res,200,{ok:true,version:store.version,updatedAt:store.updatedAt});}
+    if(endpoint==='/api/db'&&req.method==='PUT'){const input=await body(req);if(!input.db||typeof input.db!=='object')return json(res,400,{error:'invalid_db'});if(Number(input.version)!==Number(store.version))return json(res,409,{error:'version_conflict',version:store.version,db:store.db,updatedAt:store.updatedAt});const superAdminId=store.superAdminId||activeHr(store.db)?.id||activeHr(input.db)?.id;store={version:store.version+1,db:protectSuperAdmin(store.db,input.db,superAdminId),superAdminId,updatedAt:null};saveStore(store);return json(res,200,{ok:true,version:store.version,updatedAt:store.updatedAt});}
     if(endpoint==='/api/kv'){const key=url.searchParams.get('key');if(!key)return json(res,400,{error:'missing_key'});const file=keyFile(key);if(req.method==='GET')return json(res,200,{value:readJson(file,{value:null}).value});if(req.method==='PUT'){const input=await body(req);atomicWrite(file,JSON.stringify({key,value:input.value}));return json(res,200,{ok:true});}if(req.method==='DELETE'){try{fs.unlinkSync(file);}catch{}return json(res,200,{ok:true});}}
     if(endpoint==='/api/mail'&&req.method==='POST'){const input=await body(req),item={...input,createdAt:new Date().toISOString(),status:'local-only'};atomicWrite(path.join(outboxDir,`${Date.now()}-${crypto.randomBytes(3).toString('hex')}.json`),JSON.stringify(item));return json(res,200,{ok:true,queued:true,offline:true});}
     if(endpoint==='/api/outbox'&&req.method==='GET')return json(res,200,{items:fs.readdirSync(outboxDir).map(f=>readJson(path.join(outboxDir,f),null)).filter(Boolean)});
@@ -42,7 +64,8 @@ function createLocalServer({dataDir,publicDir,port=0}){
       const input=await body(req),restored=input?.format==='alsalman-hr-desktop-backup'?input.store:input;
       if(!restored?.db?.employees||!Array.isArray(restored.db.employees))return json(res,400,{error:'invalid_backup'});
       const previous=loadStore();atomicWrite(path.join(backupDir,`before-restore-${Date.now()}.json`),JSON.stringify(backupBundle(previous)));
-      const next={version:Math.max(Number(previous.version)||0,Number(restored.version)||0)+1,db:restored.db,updatedAt:null};saveStore(next);
+      const superAdminId=previous.superAdminId||activeHr(previous.db)?.id||activeHr(restored.db)?.id;
+      const next={version:Math.max(Number(previous.version)||0,Number(restored.version)||0)+1,db:protectSuperAdmin(previous.db,restored.db,superAdminId),superAdminId,updatedAt:null};saveStore(next);
       if(input?.format==='alsalman-hr-desktop-backup'&&Array.isArray(input.attachments)){
         for(const name of fs.readdirSync(kvDir))if(name.endsWith('.json'))fs.unlinkSync(path.join(kvDir,name));
         for(const item of input.attachments)if(/^[a-f0-9]{64}\.json$/.test(item.name)&&item.value)atomicWrite(path.join(kvDir,item.name),JSON.stringify(item.value));
