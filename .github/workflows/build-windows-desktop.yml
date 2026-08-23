@@ -5,10 +5,20 @@ on:
   push:
     paths:
       - "desktop-app/**"
+      - "index.html"
+      - "manifest.webmanifest"
+      - "sw.js"
+      - "icon-*.png"
+      - "apple-touch-icon.png"
       - ".github/workflows/build-windows-desktop.yml"
   pull_request:
     paths:
       - "desktop-app/**"
+      - "index.html"
+      - "manifest.webmanifest"
+      - "sw.js"
+      - "icon-*.png"
+      - "apple-touch-icon.png"
       - ".github/workflows/build-windows-desktop.yml"
 
 permissions:
@@ -29,6 +39,19 @@ jobs:
           node-version: "20"
       - name: Install dependencies
         run: npm install --no-audit --no-fund
+      - name: Prepare official UI and icon assets
+        run: npm run prepare-assets
+      - name: Verify merged Hrss UI is packaged
+        shell: pwsh
+        run: |
+          $repoUi = (Get-FileHash "../index.html" -Algorithm SHA256).Hash
+          $desktopUi = (Get-FileHash "src/public/index.html" -Algorithm SHA256).Hash
+          if ($repoUi -ne $desktopUi) { throw "Electron UI is not synchronized with the merged Hrss UI" }
+          @("apple-touch-icon.png", "icon-192.png", "icon-512.png", "icon-maskable.png") | ForEach-Object {
+            $source = (Get-FileHash "../$_" -Algorithm SHA256).Hash
+            $packaged = (Get-FileHash "src/public/$_" -Algorithm SHA256).Hash
+            if ($source -ne $packaged) { throw "Packaged official asset does not match: $_" }
+          }
       - name: Static checks
         run: npm run check
       - name: Integration tests
@@ -43,6 +66,8 @@ jobs:
           if ($setup.Length -lt 1MB -or $portable.Length -lt 1MB) { throw "Generated executable is unexpectedly small" }
           Write-Host "Setup: $($setup.FullName) ($($setup.Length) bytes)"
           Write-Host "Portable: $($portable.FullName) ($($portable.Length) bytes)"
+          Get-FileHash $setup.FullName -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($setup.Name)" } | Set-Content "dist/SHA256SUMS.txt"
+          Get-FileHash $portable.FullName -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($portable.Name)" } | Add-Content "dist/SHA256SUMS.txt"
       - name: Upload Windows x64 executables
         uses: actions/upload-artifact@v4
         with:
@@ -50,5 +75,6 @@ jobs:
           path: |
             desktop-app/dist/AlSalman-HR-Setup-*-x64.exe
             desktop-app/dist/AlSalman-HR-Portable-*-x64.exe
+            desktop-app/dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
