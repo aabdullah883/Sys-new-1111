@@ -868,10 +868,11 @@ const DEF_PERMS={
  manager:{inbox:1,team:1,chat:1,att:1,evals:1},
  employee:{chat:1}
 };
-function permsOf(role){ return (DB&&DB.settings&&DB.settings.perms&&DB.settings.perms[role])||DEF_PERMS[role]||{}; }
-function can(k,u){ u=u||ME; if(!u) return false; return !!permsOf(u.role)[k]; }
+function permsOf(role){ return role==='hr'?DEF_PERMS.hr:((DB&&DB.settings&&DB.settings.perms&&DB.settings.perms[role])||DEF_PERMS[role]||{}); }
+function can(k,u){ u=u||ME; if(!u) return false; return u.role==='hr'||!!permsOf(u.role)[k]; }
 function noPerm(){ return '<div class="empty"><span class="e">🔒</span>لا تملك صلاحية الوصول إلى هذه الشاشة.<br><span class="mini">راجع مدير الموارد البشرية لتعديل صلاحياتك.</span></div>'; }
 function canUse(tk){
+  if(ME&&ME.role==='hr') return true;
   const a=TYPES[tk].allow;
   /* الخدمات متاحة لجميع الصلاحيات ما لم يُقيّدها مدير الموارد البشرية من شاشة الصلاحيات */
   return (!a||!a.length||a.indexOf(ME.role)>=0)&&!TYPES[tk].hidden;
@@ -1388,6 +1389,24 @@ function loginView(){
      (isStandalone()?'':'<button class="btn sm ghost" id="instBtn" onclick="installApp()">📲 تثبيت التطبيق على جهازك</button>')+'</div>'+
    '<div class="mini" style="margin-top:10px;text-align:center">للمساعدة في الدخول راجع إدارة الموارد البشرية.</div>'+
    '</div></div></div>';
+}
+function hrSetupView(){
+  return '<div class="login"><div class="login-brand"><div><h1>إعداد مدير الموارد البشرية</h1><p>استعادة آمنة لحساب Super Admin في نسخة Windows.</p></div></div><div class="login-form"><div class="login-box">'+
+   '<h2>إنشاء أو ترقية مدير HR</h2><p class="sub">اختر بيانات دخول جديدة. لا توجد كلمة مرور ثابتة داخل البرنامج.</p><div id="setupErr"></div>'+
+   '<div class="field"><label>اسم المدير</label><input id="su_name" autocomplete="name"></div>'+
+   '<div class="field"><label>رقم الهوية أو الرقم الوظيفي</label><input id="su_id" inputmode="numeric"></div>'+
+   '<div class="field"><label>كلمة مرور جديدة (10 خانات، حروف وأرقام)</label><input id="su_pass" type="password" autocomplete="new-password"></div>'+
+   '<div class="field"><label>تأكيد كلمة المرور</label><input id="su_confirm" type="password" autocomplete="new-password"></div>'+
+   '<button class="btn green block" onclick="createHrSuperAdmin()">إنشاء حساب Super Admin</button></div></div></div>';
+}
+async function createHrSuperAdmin(){
+  const name=$('su_name').value.trim(),id=normNum($('su_id').value),password=$('su_pass').value,confirmPassword=$('su_confirm').value,err=$('setupErr');
+  if(password!==confirmPassword){ err.innerHTML='<div class="err">كلمتا المرور غير متطابقتين.</div>'; return; }
+  try{
+    const response=await fetch(SRV+'/setup/hr.php',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name,id,password})});
+    if(!response.ok){ err.innerHTML='<div class="err">تحقق من الاسم والرقم، واستخدم كلمة مرور من 10 خانات على الأقل تحتوي حروفاً وأرقاماً.</div>'; return; }
+    location.reload();
+  }catch(e){ err.innerHTML='<div class="err">تعذر حفظ حساب المدير محلياً.</div>'; }
 }
 async function doLogin(){
   const u=normNum($('lu').value), p=$('lp').value.trim();
@@ -2635,6 +2654,7 @@ async function saveDocImg(id,key){
 function snapOf(e){ return {id:e.id,name:e.name,branch:e.branch,dept:e.dept,title:e.title,nationality:e.nationality}; }
 function archiveEmp(id,reason){
   const e=emp(id); if(!e) return;
+  if(e.role==='hr'){ toast('حساب مدير الموارد البشرية Super Admin محمي ولا يمكن أرشفته'); return; }
   if(!reason&&!confirm('نقل الموظف '+e.name+' ومعاملاته إلى الأرشيف؟ يمكن استعادته لاحقاً.')) return;
   const rs=DB.requests.filter(r=>r.empId===id);
   rs.forEach(r=>{ r.empSnap=snapOf(e); r.archivedAt=new Date().toISOString(); r.archivedBy=ME?ME.name:'النظام'; });
@@ -2659,6 +2679,8 @@ function restoreEmp(id){
   save(); toast('استُعيد الموظف وسجله'); render();
 }
 function purgeEmp(id){
+  const protectedAccount=DB.archive.employees.find(x=>x.id===id);
+  if(protectedAccount&&protectedAccount.role==='hr'){ toast('حساب مدير الموارد البشرية Super Admin محمي ولا يمكن حذفه'); return; }
   if(!confirm('حذف نهائي لا يمكن التراجع عنه. متابعة؟')) return;
   DB.archive.employees=DB.archive.employees.filter(x=>x.id!==id);
   DB.archive.requests=DB.archive.requests.filter(r=>r.empId!==id);
@@ -2749,7 +2771,8 @@ function vArchive(){
    '<input placeholder="ابحث بالاسم أو الرقم أو رقم المعاملة" value="'+esc(q)+'" oninput="FILTER.q=this.value;refresh(this)">'+
    '<button class="btn sm ghost" onclick="openArchiveClosed()">أرشفة المعاملات المنتهية</button>'+
    '<button class="btn sm ghost" onclick="exportArchive()">⭳ تصدير الأرشيف CSV</button>'+
-   '<button class="btn sm ghost" onclick="backupAll()">💾 نسخة احتياطية شاملة</button></div>';
+   '<button class="btn sm ghost" onclick="backupAll()">💾 نسخة احتياطية شاملة</button>'+
+   '<label class="btn sm ghost" style="cursor:pointer">♻️ استعادة نسخة<input type="file" accept="application/json,.json" style="display:none" onchange="restoreAll(this)"></label></div>';
   let t2='';
   if(tab==='emp'){
     const list=A.employees.filter(e=>!q||e.name.includes(q)||e.id.includes(q));
@@ -2818,11 +2841,27 @@ function exportArchive(){
   setTimeout(()=>downloadCsv('archive-requests.csv',[['رقم المعاملة','الخدمة','الموظف','الرقم','التقديم','الحالة','تاريخ الأرشفة']]
    .concat(A.requests.map(r=>[r.id,TYPES[r.type].name,(r.empSnap||{}).name||'',r.empId,fmt(r.createdAt),r.status,fmt(r.archivedAt)]))),600);
 }
-function backupAll(){
-  const data=JSON.stringify({exportedAt:new Date().toISOString(),org:DB.settings.orgName,
-    employees:DB.employees,requests:DB.requests,docs:DB.docs,archive:DB.archive,settings:DB.settings},null,1);
+async function backupAll(){
+  let data;
+  if(SRV&&TOKEN){
+    const r=await fetch(SRV+'/backup.php',{headers:hdrs(),cache:'no-store'});
+    if(!r.ok){ toast('تعذر إنشاء النسخة الاحتياطية'); return; }
+    data=await r.text();
+  } else data=JSON.stringify({format:'alsalman-hr-browser-backup',formatVersion:1,exportedAt:new Date().toISOString(),store:{version:SRV_VER,db:DB}},null,1);
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([data],{type:'application/json'}));
   a.download='hr-backup-'+today()+'.json'; a.click(); toast('جارٍ تنزيل النسخة الاحتياطية');
+}
+async function restoreAll(input){
+  const file=input.files&&input.files[0]; input.value=''; if(!file)return;
+  if(!confirm('ستستبدل النسخة الاحتياطية جميع البيانات الحالية. هل تريد المتابعة؟'))return;
+  try{
+    const backup=JSON.parse(await file.text());
+    if(!SRV||!TOKEN)throw new Error('الاستعادة الشاملة متاحة في نسخة سطح المكتب بعد تسجيل الدخول فقط');
+    const r=await fetch(SRV+'/restore.php',{method:'POST',headers:hdrs(),body:JSON.stringify(backup)}),result=await r.json();
+    if(!r.ok)throw new Error(result.error||'ملف النسخة غير صالح');
+    SRV_VER=result.version; await pullDB(); DB=MEM[KEY]; ME=DB.employees.find(e=>e.id===ME.id)||null;
+    toast('تمت استعادة البيانات والمرفقات بنجاح'); render();
+  }catch(e){ toast('فشلت الاستعادة: '+(e.message||e)); }
 }
 function exportEmpFile(id){
   const e=emp(id), p=e.pay||{}, b=e.bank||{}, i=e.insurance||{}, q=e.qualification||{}, pp=e.passport||{};
@@ -3921,14 +3960,14 @@ function vPerms(){
     '<div class="card"><div style="overflow-x:auto"><table><thead><tr><th>الخدمة</th>'+roles.map(r=>'<th style="text-align:center">'+ROLE_NAME[r]+'</th>').join('')+'</tr></thead><tbody>'+
      Object.keys(TYPES).map(k=>{const a=TYPES[k].allow||roles;
       return '<tr><td>'+TYPES[k].icon+' <b>'+esc(TYPES[k].name)+'</b>'+(TYPES[k].hidden?' <span class="tag t-canc">موقوفة</span>':'')+'</td>'+
-      roles.map(r=>'<td style="text-align:center"><input type="checkbox" id="sv_'+k+'_'+r+'" '+(a.indexOf(r)>=0?'checked':'')+'></td>').join('')+'</tr>';}).join('')+
+      roles.map(r=>'<td style="text-align:center"><input type="checkbox" id="sv_'+k+'_'+r+'" '+(r==='hr'?'checked disabled title="مدير HR لديه وصول كامل"':(a.indexOf(r)>=0?'checked':''))+'></td>').join('')+'</tr>';}).join('')+
      '</tbody></table></div><div class="bd"><button class="btn green" onclick="saveSvcPerms()">حفظ صلاحيات الخدمات</button></div></div>';
   }
   return bar+'<div class="note" style="margin-bottom:14px">فعّل أو أوقف أي شاشة أو إجراء لكل صلاحية، ويسري التغيير فوراً على كل من يحمل تلك الصلاحية.</div>'+
    CAP_GROUPS.map(g=>'<div class="card" style="margin-bottom:16px"><div class="hd"><h3>'+g.g+'</h3></div><div style="overflow-x:auto">'+
     '<table><thead><tr><th>البند</th>'+roles.map(r=>'<th style="text-align:center">'+ROLE_NAME[r]+'</th>').join('')+'</tr></thead><tbody>'+
     g.items.map(it=>'<tr><td>'+esc(it[1])+'</td>'+roles.map(r=>'<td style="text-align:center">'+
-      ((r==='hr'&&(it[0]==='perms'||it[0]==='settings'))?'<input type="checkbox" checked disabled title="لا يمكن سحبها من مدير الموارد البشرية">'
+      (r==='hr'?'<input type="checkbox" checked disabled title="لا يمكن سحب أي صلاحية من مدير الموارد البشرية Super Admin">'
        :'<input type="checkbox" id="pm_'+it[0]+'_'+r+'" '+(permsOf(r)[it[0]]?'checked':'')+'>')+'</td>').join('')+'</tr>').join('')+
     '</tbody></table></div></div>').join('')+
    '<div class="pill-row"><button class="btn green" onclick="savePerms()">حفظ الصلاحيات</button>'+
@@ -3937,7 +3976,7 @@ function vPerms(){
 function savePerms(){
   const roles=Object.keys(ROLE_NAME), p={};
   roles.forEach(r=>{ p[r]={}; ALL_CAPS.forEach(c=>{ const el=$('pm_'+c+'_'+r); p[r][c]=el?!!el.checked:!!permsOf(r)[c]; }); });
-  p.hr.perms=true; p.hr.settings=true;
+  p.hr=Object.assign({},DEF_PERMS.hr);
   DB.settings.perms=p; save(); toast('حُفظت الصلاحيات'); render();
 }
 function resetPerms(){
@@ -4882,6 +4921,7 @@ function runImport(){
     if(!r.name||!r.iqama){ skip++; return; }
     const iq=String(r.iqama).trim();
     let e=DB.employees.find(x=>x.iqama===iq||(r.id&&x.id===String(r.id).trim()));
+    if(e&&e.role==='hr'){ skip++; return; }
     const pass= pwMode==='iqama'? iq.slice(-6) : '123456';
     const base={
       name:r.name.trim(), iqama:iq,
@@ -4900,7 +4940,7 @@ function runImport(){
       salary:+(r.salary||0)||5000,
       pay:{basic:+(r.salary||0)||5000,housing:+(r.housing||0)||0,transport:+(r.transport||0)||0,other:0},
       leaveBalance:+(r.leaveBalance||0)||DB.settings.defaultLeave,
-      role:(r.role&&ROLE_NAME[r.role])?r.role:(r.role==='مدير قسم'?'manager':r.role==='مدير فرع'?'branch':r.role==='موظف موارد بشرية'?'hr_staff':'employee')
+      role:(r.role&&r.role!=='hr'&&ROLE_NAME[r.role])?r.role:(r.role==='مدير قسم'?'manager':r.role==='مدير فرع'?'branch':r.role==='موظف موارد بشرية'?'hr_staff':'employee')
     };
     if(e){
       if(!upd){ skip++; return; }
@@ -5079,6 +5119,10 @@ async function autoSync(){
   if(SRV){ try{ TOKEN=sessionStorage.getItem('hr_token')||null; }catch(e){} }
   DB=await S.get(KEY);
   if(!DB||!DB.employees||!DB.employees.length){ DB=seed(); await save(); }
+  if(SRV&&!DB.employees.some(e=>e.role==='hr'&&e.active!==false)){
+    document.getElementById('root').innerHTML=hrSetupView();
+    return;
+  }
   if(!DB.archive) DB.archive={employees:[],requests:[]};
   if(!DB.archive.chats) DB.archive.chats=[];
   if(!DB.archive.messages) DB.archive.messages=[];
